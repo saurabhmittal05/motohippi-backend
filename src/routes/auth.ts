@@ -4,68 +4,46 @@ import { usersTable } from "../lib/db/index.js";
 import { eq } from "drizzle-orm";
 import { hashPassword, generateToken, authMiddleware } from "../lib/auth.js";
 import { SignupBody, LoginBody } from "../lib/api-zod/index.js";
+import { sendMail } from "../lib/email.js";
 
 const router = Router();
 
 // ── OTP store (in-memory; replace with Redis for multi-instance) ──────────────
-interface OtpEntry { code: string; expires: number; userId: number; }
+interface OtpEntry {
+  code: string;
+  expires: number;
+  userId: number;
+}
 const otpStore = new Map<string, OtpEntry>();
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of otpStore) {
-    if (entry.expires < now) otpStore.delete(key);
-  }
-}, 10 * 60 * 1000);
+setInterval(
+  () => {
+    const now = Date.now();
+    for (const [key, entry] of otpStore) {
+      if (entry.expires < now) otpStore.delete(key);
+    }
+  },
+  10 * 60 * 1000,
+);
 
 function generateOtp(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
 async function sendOtpEmail(email: string, code: string): Promise<void> {
-  const sgKey = process.env.SENDGRID_API_KEY;
-  const fromEmail = process.env.FROM_EMAIL ?? "noreply@motohippi.com";
-
-  if (sgKey) {
-    try {
-      await fetch("https://api.sendgrid.com/v3/mail/send", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${sgKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          personalizations: [{ to: [{ email }] }],
-          from: { email: fromEmail, name: "MotoHippi" },
-          subject: "Your MotoHippi verification code",
-          content: [
-            {
-              type: "text/html",
-              value: `
-                <div style="font-family:sans-serif;max-width:480px;margin:auto;background:#0f0f0f;color:#fff;border-radius:12px;overflow:hidden;">
-                  <div style="background:#a3e635;padding:24px;text-align:center;">
-                    <h1 style="color:#000;margin:0;font-size:28px;font-weight:900;">🏍️ MotoHippi</h1>
-                  </div>
-                  <div style="padding:32px;">
-                    <h2 style="margin-top:0;">Verify your email</h2>
-                    <p style="color:#aaa;">Use the code below. It expires in 10 minutes.</p>
-                    <div style="background:#1a1a1a;border:1px solid #333;border-radius:8px;text-align:center;padding:24px;margin:24px 0;">
-                      <span style="font-size:42px;font-weight:900;letter-spacing:12px;color:#a3e635;">${code}</span>
-                    </div>
-                    <p style="color:#555;font-size:13px;">If you didn't request this, ignore this email.</p>
-                  </div>
-                </div>`,
-            },
-          ],
-        }),
-      });
-      return;
-    } catch (e) {
-      console.error("SendGrid error:", e);
-    }
-  }
-  // Fallback: console log for dev / when SendGrid is not configured
-  console.log(`\n🔑 OTP for ${email}: ${code}\n`);
+  console.log("reaching...");
+  await sendMail({
+    to: email,
+    subject: "Your MotoHippi verification code",
+    templateName: "otp-verification",
+    variables: {
+      title: "Verify your email",
+      code,
+      email,
+    },
+  }).catch(() => {
+    console.log("❌ Error sending OTP email");
+  });
 }
 
 // ── User formatter (shared across routes) ────────────────────────────────────
@@ -101,12 +79,18 @@ export function formatUser(user: typeof usersTable.$inferSelect) {
 router.post("/auth/signup", async (req, res) => {
   const result = SignupBody.safeParse(req.body);
   if (!result.success) {
-    res.status(400).json({ error: "Invalid input", details: result.error.flatten() });
+    res
+      .status(400)
+      .json({ error: "Invalid input", details: result.error.flatten() });
     return;
   }
   const { name, email, password, phone } = result.data;
 
-  const existing = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
+  const existing = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.email, email))
+    .limit(1);
   if (existing.length > 0) {
     res.status(400).json({ error: "Email already registered" });
     return;
@@ -114,16 +98,30 @@ router.post("/auth/signup", async (req, res) => {
 
   const [user] = await db
     .insert(usersTable)
-    .values({ name, email, passwordHash: hashPassword(password), phone: phone ?? null })
+    .values({
+      name,
+      email,
+      passwordHash: hashPassword(password),
+      phone: phone ?? null,
+    })
     .returning();
-  if (!user) { res.status(500).json({ error: "Failed to create user" }); return; }
+  if (!user) {
+    res.status(500).json({ error: "Failed to create user" });
+    return;
+  }
 
   const token = generateToken(user.id);
   const code = generateOtp();
-  otpStore.set(email, { code, expires: Date.now() + 10 * 60 * 1000, userId: user.id });
+  otpStore.set(email, {
+    code,
+    expires: Date.now() + 10 * 60 * 1000,
+    userId: user.id,
+  });
   await sendOtpEmail(email, code).catch(() => {});
 
-  res.status(201).json({ token, user: formatUser(user), emailVerificationSent: true });
+  res
+    .status(201)
+    .json({ token, user: formatUser(user), emailVerificationSent: true });
 });
 
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
@@ -135,16 +133,26 @@ router.post("/auth/login", async (req, res) => {
       return;
     }
     const { email, password } = result.data;
-    const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
+    const [user] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.email, email))
+      .limit(1);
     if (!user || user.passwordHash !== hashPassword(password)) {
       res.status(401).json({ error: "Invalid credentials" });
       return;
     }
     const token = generateToken(user.id);
-    res.status(200).json({ token, user: formatUser(user), requiresVerification: !user.isVerified });
+    res.status(200).json({
+      token,
+      user: formatUser(user),
+      requiresVerification: !user.isVerified,
+    });
   } catch (err: any) {
     console.error("❌ Login route error:", err);
-    res.status(500).json({ error: "Internal server error", message: err?.message });
+    res
+      .status(500)
+      .json({ error: "Internal server error", message: err?.message });
   }
 });
 
@@ -156,9 +164,19 @@ router.post("/auth/logout", (_req, res) => {
 // ── POST /api/auth/send-otp ───────────────────────────────────────────────────
 router.post("/auth/send-otp", authMiddleware, async (req, res) => {
   const userId = (req as any).userId as number;
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
-  if (!user) { res.status(404).json({ error: "User not found" }); return; }
-  if (user.isVerified) { res.json({ message: "Already verified" }); return; }
+  const [user] = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.id, userId))
+    .limit(1);
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  if (user.isVerified) {
+    res.json({ message: "Already verified" });
+    return;
+  }
 
   const existing = otpStore.get(user.email);
   if (existing && existing.expires - Date.now() > 9 * 60 * 1000) {
@@ -167,7 +185,11 @@ router.post("/auth/send-otp", authMiddleware, async (req, res) => {
   }
 
   const code = generateOtp();
-  otpStore.set(user.email, { code, expires: Date.now() + 10 * 60 * 1000, userId: user.id });
+  otpStore.set(user.email, {
+    code,
+    expires: Date.now() + 10 * 60 * 1000,
+    userId: user.id,
+  });
   await sendOtpEmail(user.email, code).catch(() => {});
   res.json({ message: "OTP sent" });
 });
@@ -181,14 +203,26 @@ router.post("/auth/verify-otp", authMiddleware, async (req, res) => {
     return;
   }
 
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
-  if (!user) { res.status(404).json({ error: "User not found" }); return; }
+  const [user] = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.id, userId))
+    .limit(1);
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
 
   const entry = otpStore.get(user.email);
-  if (!entry) { res.status(400).json({ error: "No OTP found. Please request a new code." }); return; }
+  if (!entry) {
+    res.status(400).json({ error: "No OTP found. Please request a new code." });
+    return;
+  }
   if (Date.now() > entry.expires) {
     otpStore.delete(user.email);
-    res.status(400).json({ error: "OTP has expired. Please request a new code." });
+    res
+      .status(400)
+      .json({ error: "OTP has expired. Please request a new code." });
     return;
   }
   if (entry.code !== code.trim()) {
@@ -196,7 +230,10 @@ router.post("/auth/verify-otp", authMiddleware, async (req, res) => {
     return;
   }
 
-  await db.update(usersTable).set({ isVerified: true }).where(eq(usersTable.id, userId));
+  await db
+    .update(usersTable)
+    .set({ isVerified: true })
+    .where(eq(usersTable.id, userId));
   otpStore.delete(user.email);
 
   const token = generateToken(userId);
@@ -238,7 +275,8 @@ router.get("/auth/google/callback", async (req, res) => {
   }
 
   try {
-    const appUrl = process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`;
+    const appUrl =
+      process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`;
     const redirectUri = `${appUrl}/api/auth/google/callback`;
 
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
@@ -252,29 +290,42 @@ router.get("/auth/google/callback", async (req, res) => {
         grant_type: "authorization_code",
       }),
     });
-    const tokens = await tokenRes.json() as any;
+    const tokens = (await tokenRes.json()) as any;
     if (!tokens.access_token) throw new Error("No access token");
 
-    const profileRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-      headers: { Authorization: `Bearer ${tokens.access_token}` },
-    });
-    const profile = await profileRes.json() as any;
+    const profileRes = await fetch(
+      "https://www.googleapis.com/oauth2/v2/userinfo",
+      {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      },
+    );
+    const profile = (await profileRes.json()) as any;
     const { email, name, picture } = profile;
     if (!email) throw new Error("No email from Google");
 
-    let [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
+    let [user] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.email, email))
+      .limit(1);
     if (!user) {
-      const [created] = await db.insert(usersTable).values({
-        name: name || email.split("@")[0],
-        email,
-        passwordHash: hashPassword(crypto.randomUUID()),
-        avatarUrl: picture || null,
-        isVerified: true,
-      }).returning();
+      const [created] = await db
+        .insert(usersTable)
+        .values({
+          name: name || email.split("@")[0],
+          email,
+          passwordHash: hashPassword(crypto.randomUUID()),
+          avatarUrl: picture || null,
+          isVerified: true,
+        })
+        .returning();
       if (!created) throw new Error("Failed to create Google user");
       user = created;
     } else if (!user.isVerified) {
-      await db.update(usersTable).set({ isVerified: true }).where(eq(usersTable.id, user.id));
+      await db
+        .update(usersTable)
+        .set({ isVerified: true })
+        .where(eq(usersTable.id, user.id));
       user = { ...user, isVerified: true };
     }
 

@@ -44,7 +44,18 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
 `,
     },
   });
+
+  // Copy email templates directory to dist/templates
+  const templatesSrc = path.resolve(__dirname, "src/templates");
+  const templatesDist = path.resolve(distDir, "templates");
+  try {
+    const { cp } = await import("node:fs/promises");
+    await cp(templatesSrc, templatesDist, { recursive: true });
+  } catch {
+    // Ignore if templates directory does not exist
+  }
 }
+
 
 buildAll().catch((err) => {
   console.error(err);
