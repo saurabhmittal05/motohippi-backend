@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
-    "dev": "NODE_ENV=development node ./build.mjs && node --enable-source-maps ./dist/index.mjs",
+    "dev": "NODE_ENV=development node ./build.mjs && node --enable-source-maps --watch ./dist/index.mjs",
     "typecheck": "tsc --noEmit",
     "db:push": "drizzle-kit push",
     "db:seed": "node ./build.mjs && node ./dist/seed.mjs",
