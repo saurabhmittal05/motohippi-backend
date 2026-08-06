@@ -32,6 +32,9 @@ function getTransporter(): nodemailer.Transporter | null {
       port,
       secure: port === 465,
       auth: { user, pass },
+      connectionTimeout: 5000, // 5s connection timeout
+      greetingTimeout: 5000,   // 5s greeting timeout
+      socketTimeout: 10000,    // 10s socket timeout
     });
   }
 

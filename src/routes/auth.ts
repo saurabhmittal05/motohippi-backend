@@ -8,7 +8,7 @@ import { sendMail } from "../lib/email.js";
 
 const router = Router();
 
-// ── OTP store (in-memory; replace with Redis for multi-instance) ──────────────
+// ── OTP & Pending Registration Stores (in-memory) ──────────────────────────────
 interface OtpEntry {
   code: string;
   expires: number;
@@ -16,11 +16,24 @@ interface OtpEntry {
 }
 const otpStore = new Map<string, OtpEntry>();
 
+interface PendingRegistration {
+  name: string;
+  email: string;
+  passwordHash: string;
+  phone?: string | null;
+  code: string;
+  expires: number;
+}
+const pendingRegistrations = new Map<string, PendingRegistration>();
+
 setInterval(
   () => {
     const now = Date.now();
     for (const [key, entry] of otpStore) {
       if (entry.expires < now) otpStore.delete(key);
+    }
+    for (const [key, entry] of pendingRegistrations) {
+      if (entry.expires < now) pendingRegistrations.delete(key);
     }
   },
   10 * 60 * 1000,
@@ -96,32 +109,24 @@ router.post("/auth/signup", async (req, res) => {
     return;
   }
 
-  const [user] = await db
-    .insert(usersTable)
-    .values({
-      name,
-      email,
-      passwordHash: hashPassword(password),
-      phone: phone ?? null,
-    })
-    .returning();
-  if (!user) {
-    res.status(500).json({ error: "Failed to create user" });
-    return;
-  }
-
-  const token = generateToken(user.id);
   const code = generateOtp();
-  otpStore.set(email, {
+  pendingRegistrations.set(email, {
+    name,
+    email,
+    passwordHash: hashPassword(password),
+    phone: phone ?? null,
     code,
     expires: Date.now() + 10 * 60 * 1000,
-    userId: user.id,
   });
-  await sendOtpEmail(email, code).catch(() => {});
 
-  res
-    .status(201)
-    .json({ token, user: formatUser(user), emailVerificationSent: true });
+  // Dispatch email in background so HTTP response is instant
+  sendOtpEmail(email, code).catch(() => {});
+
+  res.status(200).json({
+    email,
+    emailVerificationSent: true,
+    message: "OTP verification code sent to your email",
+  });
 });
 
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
@@ -162,44 +167,135 @@ router.post("/auth/logout", (_req, res) => {
 });
 
 // ── POST /api/auth/send-otp ───────────────────────────────────────────────────
-router.post("/auth/send-otp", authMiddleware, async (req, res) => {
-  const userId = (req as any).userId as number;
-  const [user] = await db
-    .select()
-    .from(usersTable)
-    .where(eq(usersTable.id, userId))
-    .limit(1);
-  if (!user) {
-    res.status(404).json({ error: "User not found" });
-    return;
+router.post("/auth/send-otp", async (req, res) => {
+  const bodyEmail = req.body?.email as string | undefined;
+  let targetEmail: string | null = null;
+  let userId: number | null = null;
+
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const parsedId = parseToken(authHeader.slice(7));
+    if (parsedId) userId = parsedId;
   }
-  if (user.isVerified) {
-    res.json({ message: "Already verified" });
+
+  if (bodyEmail) {
+    targetEmail = bodyEmail;
+  } else if (userId) {
+    const [user] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .limit(1);
+    if (user) {
+      if (user.isVerified) {
+        res.json({ message: "Already verified" });
+        return;
+      }
+      targetEmail = user.email;
+    }
+  }
+
+  if (!targetEmail) {
+    res.status(400).json({ error: "Email is required to send OTP" });
     return;
   }
 
-  const existing = otpStore.get(user.email);
-  if (existing && existing.expires - Date.now() > 9 * 60 * 1000) {
+  const pending = pendingRegistrations.get(targetEmail);
+  if (pending) {
+    if (pending.expires - Date.now() > 9 * 60 * 1000) {
+      res.json({ message: "OTP already sent recently" });
+      return;
+    }
+    const code = generateOtp();
+    pending.code = code;
+    pending.expires = Date.now() + 10 * 60 * 1000;
+    pendingRegistrations.set(targetEmail, pending);
+    sendOtpEmail(targetEmail, code).catch(() => {});
+    res.json({ message: "OTP sent" });
+    return;
+  }
+
+  const existingOtp = otpStore.get(targetEmail);
+  if (existingOtp && existingOtp.expires - Date.now() > 9 * 60 * 1000) {
     res.json({ message: "OTP already sent recently" });
     return;
   }
 
   const code = generateOtp();
-  otpStore.set(user.email, {
-    code,
-    expires: Date.now() + 10 * 60 * 1000,
-    userId: user.id,
-  });
-  await sendOtpEmail(user.email, code).catch(() => {});
+  if (userId) {
+    otpStore.set(targetEmail, {
+      code,
+      expires: Date.now() + 10 * 60 * 1000,
+      userId,
+    });
+  }
+  sendOtpEmail(targetEmail, code).catch(() => {});
   res.json({ message: "OTP sent" });
 });
 
 // ── POST /api/auth/verify-otp ─────────────────────────────────────────────────
-router.post("/auth/verify-otp", authMiddleware, async (req, res) => {
-  const userId = (req as any).userId as number;
-  const { code } = req.body;
+router.post("/auth/verify-otp", async (req, res) => {
+  const { code, email: bodyEmail } = req.body;
   if (!code || typeof code !== "string") {
     res.status(400).json({ error: "code is required" });
+    return;
+  }
+
+  let targetEmail = bodyEmail as string | undefined;
+  let userId: number | null = null;
+
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const parsedId = parseToken(authHeader.slice(7));
+    if (parsedId) userId = parsedId;
+  }
+
+  if (targetEmail && pendingRegistrations.has(targetEmail)) {
+    const pending = pendingRegistrations.get(targetEmail)!;
+    if (Date.now() > pending.expires) {
+      pendingRegistrations.delete(targetEmail);
+      res.status(400).json({ error: "OTP has expired. Please request a new code." });
+      return;
+    }
+    if (pending.code !== code.trim()) {
+      res.status(400).json({ error: "Invalid code. Please try again." });
+      return;
+    }
+
+    const [newUser] = await db
+      .insert(usersTable)
+      .values({
+        name: pending.name,
+        email: pending.email,
+        passwordHash: pending.passwordHash,
+        phone: pending.phone ?? null,
+        isVerified: true,
+      })
+      .returning();
+
+    pendingRegistrations.delete(targetEmail);
+
+    if (!newUser) {
+      res.status(500).json({ error: "Failed to create user" });
+      return;
+    }
+
+    const token = generateToken(newUser.id);
+    res.json({ message: "Email verified", token, user: formatUser(newUser) });
+    return;
+  }
+
+  if (!userId && targetEmail) {
+    const [dbUser] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.email, targetEmail))
+      .limit(1);
+    if (dbUser) userId = dbUser.id;
+  }
+
+  if (!userId) {
+    res.status(400).json({ error: "No pending verification found for this email." });
     return;
   }
 
@@ -208,6 +304,7 @@ router.post("/auth/verify-otp", authMiddleware, async (req, res) => {
     .from(usersTable)
     .where(eq(usersTable.id, userId))
     .limit(1);
+
   if (!user) {
     res.status(404).json({ error: "User not found" });
     return;
@@ -220,9 +317,7 @@ router.post("/auth/verify-otp", authMiddleware, async (req, res) => {
   }
   if (Date.now() > entry.expires) {
     otpStore.delete(user.email);
-    res
-      .status(400)
-      .json({ error: "OTP has expired. Please request a new code." });
+    res.status(400).json({ error: "OTP has expired. Please request a new code." });
     return;
   }
   if (entry.code !== code.trim()) {
