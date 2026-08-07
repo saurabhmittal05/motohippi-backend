@@ -11,6 +11,7 @@ import messagesRouter from "./messages.js";
 import notificationsRouter from "./notifications.js";
 import dashboardRouter from "./dashboard.js";
 import searchRouter from "./search.js";
+import uploadRouter from "./upload.js";
 
 const router: IRouter = Router();
 
@@ -26,5 +27,6 @@ router.use(messagesRouter);
 router.use(notificationsRouter);
 router.use(dashboardRouter);
 router.use(searchRouter);
+router.use(uploadRouter);
 
 export default router;
