@@ -21,6 +21,13 @@ interface PendingRegistration {
 }
 export const pendingRegistrations = new Map<string, PendingRegistration>();
 
+interface PasswordResetEntry {
+  code: string;
+  expires: number;
+  userId: number;
+}
+export const passwordResetStore = new Map<string, PasswordResetEntry>();
+
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of otpStore) {
@@ -28,6 +35,9 @@ setInterval(() => {
   }
   for (const [key, entry] of pendingRegistrations) {
     if (entry.expires < now) pendingRegistrations.delete(key);
+  }
+  for (const [key, entry] of passwordResetStore) {
+    if (entry.expires < now) passwordResetStore.delete(key);
   }
 }, 10 * 60 * 1000);
 
@@ -152,4 +162,78 @@ export async function verifyOtp(email?: string, userId?: number | null, code?: s
 
   const token = generateToken(targetUserId);
   return { token, user: { ...formatUser(user), isVerified: true } };
+}
+
+export async function requestPasswordReset(email: string) {
+  if (!email || !email.trim()) {
+    throw new Error("Email is required");
+  }
+  const cleanEmail = email.trim().toLowerCase();
+
+  const [user] = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.email, cleanEmail))
+    .limit(1);
+
+  if (!user) {
+    // Return generic success to avoid email enumeration
+    return { message: "If an account exists with this email, a reset code has been sent." };
+  }
+
+  const code = generateOtp();
+  passwordResetStore.set(cleanEmail, {
+    code,
+    expires: Date.now() + 10 * 60 * 1000,
+    userId: user.id,
+  });
+
+  await sendMail({
+    to: cleanEmail,
+    subject: "Reset your MotoHippi password",
+    templateName: "password-reset",
+    variables: {
+      title: "Reset Your Password",
+      code,
+      email: cleanEmail,
+    },
+  }).catch((err) => {
+    console.error("❌ Error sending password reset email:", err);
+  });
+
+  return { message: "If an account exists with this email, a reset code has been sent." };
+}
+
+export async function resetPasswordWithOtp(email: string, code: string, newPassword: string) {
+  if (!email || !code || !newPassword) {
+    throw new Error("Email, code, and new password are required");
+  }
+  if (newPassword.length < 6) {
+    throw new Error("Password must be at least 6 characters");
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const entry = passwordResetStore.get(cleanEmail);
+
+  if (!entry) {
+    throw new Error("No password reset request found for this email or code expired.");
+  }
+  if (Date.now() > entry.expires) {
+    passwordResetStore.delete(cleanEmail);
+    throw new Error("Reset code has expired. Please request a new code.");
+  }
+  if (entry.code !== code.trim()) {
+    throw new Error("Invalid verification code. Please try again.");
+  }
+
+  const newPasswordHash = hashPassword(newPassword);
+
+  await db
+    .update(usersTable)
+    .set({ passwordHash: newPasswordHash })
+    .where(eq(usersTable.id, entry.userId));
+
+  passwordResetStore.delete(cleanEmail);
+
+  return { message: "Password updated successfully! You can now log in." };
 }

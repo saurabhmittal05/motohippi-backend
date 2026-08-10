@@ -105,3 +105,23 @@ export async function handleVerifyOtp(req: Request, res: Response) {
     res.status(400).json({ error: err?.message || "Verification failed" });
   }
 }
+
+export async function handleForgotPassword(req: Request, res: Response) {
+  try {
+    const { email } = req.body || {};
+    const result = await authService.requestPasswordReset(email);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || "Failed to request password reset" });
+  }
+}
+
+export async function handleResetPassword(req: Request, res: Response) {
+  try {
+    const { email, code, newPassword } = req.body || {};
+    const result = await authService.resetPasswordWithOtp(email, code, newPassword);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || "Failed to reset password" });
+  }
+}

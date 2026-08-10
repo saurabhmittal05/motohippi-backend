@@ -42,6 +42,8 @@ router.post("/auth/login", authController.handleLogin);
 router.post("/auth/logout", authController.handleLogout);
 router.post("/auth/send-otp", authController.handleSendOtp);
 router.post("/auth/verify-otp", authController.handleVerifyOtp);
+router.post("/auth/forgot-password", authController.handleForgotPassword);
+router.post("/auth/reset-password", authController.handleResetPassword);
 
 // ── GET /api/auth/google ──────────────────────────────────────────────────────
 router.get("/auth/google", (req, res) => {
