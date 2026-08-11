@@ -13,8 +13,12 @@ export const matchesTable = pgTable("matches", {
   id: serial("id").primaryKey(),
   user1Id: integer("user1_id").notNull().references(() => usersTable.id),
   user2Id: integer("user2_id").notNull().references(() => usersTable.id),
+  requesterId: integer("requester_id").references(() => usersTable.id),
+  receiverId: integer("receiver_id").references(() => usersTable.id),
+  status: text("status").default("pending").notNull(), // "pending" | "accepted" | "declined"
   conversationId: integer("conversation_id"),
   matchedAt: timestamp("matched_at").defaultNow().notNull(),
+  acceptedAt: timestamp("accepted_at"),
 });
 
 export const eventsTable = pgTable("events", {

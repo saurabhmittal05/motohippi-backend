@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { db } from "../lib/db/index.js";
-import { usersTable, swipesTable, matchesTable, conversationsTable } from "../lib/db/index.js";
+import { usersTable, swipesTable, matchesTable } from "../lib/db/index.js";
 import { eq, ne, sql } from "drizzle-orm";
 import { authMiddleware } from "../lib/auth.js";
 import { formatUser } from "./auth.js";
 import { SwipeBody } from "../lib/api-zod/index.js";
+import * as matchService from "../services/match.service.js";
+import * as matchController from "../controllers/match.controller.js";
 
 const router = Router();
 
@@ -45,38 +47,20 @@ router.post("/discover/swipe", authMiddleware, async (req, res) => {
   if (!result.success) { res.status(400).json({ error: "Invalid input" }); return; }
   const { targetUserId, action } = result.data;
 
-  await db.insert(swipesTable).values({ swiperId, targetId: targetUserId, action }).onConflictDoNothing();
-
-  let isMatch = false;
-  let match = null;
-  if (action === "like" || action === "superlike") {
-    const [theirSwipe] = await db.select().from(swipesTable)
-      .where(sql`${swipesTable.swiperId} = ${targetUserId} AND ${swipesTable.targetId} = ${swiperId} AND ${swipesTable.action} IN ('like', 'superlike')`)
-      .limit(1);
-
-    if (theirSwipe) {
-      isMatch = true;
-      const [conv] = await db.insert(conversationsTable).values({ user1Id: swiperId, user2Id: targetUserId }).returning();
-      if (!conv) { res.status(500).json({ error: "Failed to create conversation" }); return; }
-      const [newMatch] = await db.insert(matchesTable).values({ user1Id: swiperId, user2Id: targetUserId, conversationId: conv.id }).returning();
-      if (!newMatch) { res.status(500).json({ error: "Failed to create match" }); return; }
-      const [matchedUser] = await db.select().from(usersTable).where(eq(usersTable.id, targetUserId)).limit(1);
-      if (!matchedUser) { res.status(404).json({ error: "Matched user not found" }); return; }
-      match = {
-        id: newMatch.id,
-        user: formatUser(matchedUser),
-        conversationId: conv.id,
-        matchedAt: newMatch.matchedAt.toISOString(),
-      };
-    }
+  try {
+    const swipeResult = await matchService.handleSwipe(swiperId, targetUserId, action);
+    res.json(swipeResult);
+  } catch (err: any) {
+    res.status(500).json({ error: "Swipe processing failed", message: err?.message });
   }
-  res.json({ isMatch, match });
 });
 
 router.get("/discover/matches", authMiddleware, async (req, res) => {
   const userId = (req as any).userId;
   const userMatches = await db.select().from(matchesTable)
-    .where(sql`${matchesTable.user1Id} = ${userId} OR ${matchesTable.user2Id} = ${userId}`)
+    .where(
+      sql`(${matchesTable.user1Id} = ${userId} OR ${matchesTable.user2Id} = ${userId}) AND ${matchesTable.status} = 'accepted'`
+    )
     .limit(50);
 
   const result = (await Promise.all(userMatches.map(async (m) => {
@@ -92,5 +76,10 @@ router.get("/discover/matches", authMiddleware, async (req, res) => {
   }))).filter(Boolean);
   res.json(result);
 });
+
+// ── Match Request Endpoints ───────────────────────────────────────────────────
+router.get("/matches/pending", authMiddleware, matchController.getPendingRequests);
+router.post("/matches/:id/accept", authMiddleware, matchController.acceptRequest);
+router.post("/matches/:id/decline", authMiddleware, matchController.declineRequest);
 
 export default router;
