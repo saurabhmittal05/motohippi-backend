@@ -14,10 +14,19 @@ export async function updateProfile(userId: number, updateData: Record<string, a
 
   // Upload Base64 avatarUrl / coverUrl to AWS S3
   if (payload.avatarUrl && payload.avatarUrl.startsWith("data:")) {
-    payload.avatarUrl = await uploadImageToS3(payload.avatarUrl, "avatars");
+    const s3Url = await uploadImageToS3(payload.avatarUrl, "avatars");
+    if (s3Url.startsWith("data:")) {
+      throw new Error("Failed to upload avatar to AWS S3. Please verify S3 credentials.");
+    }
+    payload.avatarUrl = s3Url;
   }
+
   if (payload.coverUrl && payload.coverUrl.startsWith("data:")) {
-    payload.coverUrl = await uploadImageToS3(payload.coverUrl, "covers");
+    const s3Url = await uploadImageToS3(payload.coverUrl, "covers");
+    if (s3Url.startsWith("data:")) {
+      throw new Error("Failed to upload cover photo to AWS S3. Please verify S3 credentials.");
+    }
+    payload.coverUrl = s3Url;
   }
 
   const [updatedUser] = await db
