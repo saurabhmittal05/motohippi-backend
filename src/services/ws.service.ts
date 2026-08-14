@@ -3,6 +3,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { parseToken } from "../lib/auth.js";
 import { db, conversationsTable, messagesTable } from "../lib/db/index.js";
 import { eq, sql } from "drizzle-orm";
+import { uploadMedia } from "./upload.service.js";
 
 interface UserSocket extends WebSocket {
   userId?: number;
@@ -18,7 +19,8 @@ export function initWebSocketServer(httpServer: HttpServer) {
     const url = new URL(request.url || "", `http://${request.headers.host}`);
     
     // Only handle WebSocket connections on /ws endpoint
-    if (url.pathname !== "/ws" && url.pathname !== "/api/ws") {
+    if (url.pathname !== "/ws") {
+      socket.destroy();
       return;
     }
 
@@ -36,66 +38,53 @@ export function initWebSocketServer(httpServer: HttpServer) {
       return;
     }
 
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      const userWs = ws as UserSocket;
-      userWs.userId = userId;
-      userWs.isAlive = true;
-      wss.emit("connection", userWs, request);
+    wss.handleUpgrade(request, socket, head, (ws: UserSocket) => {
+      ws.userId = userId;
+      ws.isAlive = true;
+      wss.emit("connection", ws, request);
     });
   });
 
   wss.on("connection", (ws: UserSocket) => {
     const userId = ws.userId;
-    if (!userId) {
-      ws.close(1008, "User not authenticated");
-      return;
-    }
+    if (!userId) return;
 
-    // Register active user socket connection
     if (!userSockets.has(userId)) {
       userSockets.set(userId, new Set());
     }
     userSockets.get(userId)!.add(ws);
 
-    console.log(`⚡ WebSocket connected: User ${userId}`);
-
     ws.on("pong", () => {
       ws.isAlive = true;
     });
 
-    ws.on("message", async (rawMessage) => {
+    ws.on("message", (data: string) => {
       try {
-        const payload = JSON.parse(rawMessage.toString());
-        await handleIncomingFrame(ws, userId, payload);
+        const payload = JSON.parse(data.toString());
+        handleIncomingFrame(ws, userId, payload);
       } catch (err) {
-        console.error("❌ WebSocket frame error:", err);
+        console.error("Failed to parse WebSocket frame:", err);
       }
     });
 
     ws.on("close", () => {
-      const userSet = userSockets.get(userId);
-      if (userSet) {
-        userSet.delete(ws);
-        if (userSet.size === 0) {
+      const sockets = userSockets.get(userId);
+      if (sockets) {
+        sockets.delete(ws);
+        if (sockets.size === 0) {
           userSockets.delete(userId);
         }
       }
-      console.log(`🔌 WebSocket disconnected: User ${userId}`);
     });
   });
 
-  // Heartbeat ping interval to prune stale connections
   const interval = setInterval(() => {
-    for (const [, socketSet] of userSockets) {
-      for (const ws of socketSet) {
-        if (!ws.isAlive) {
-          ws.terminate();
-          continue;
-        }
-        ws.isAlive = false;
-        ws.ping();
-      }
-    }
+    wss.clients.forEach((ws: WebSocket) => {
+      const userWs = ws as UserSocket;
+      if (userWs.isAlive === false) return userWs.terminate();
+      userWs.isAlive = false;
+      userWs.ping();
+    });
   }, 30000);
 
   wss.on("close", () => {
@@ -107,7 +96,7 @@ export function initWebSocketServer(httpServer: HttpServer) {
 
 async function handleIncomingFrame(ws: UserSocket, senderId: number, payload: any) {
   if (payload.type === "send_message") {
-    const { conversationId, content } = payload;
+    const { conversationId, content, messageType } = payload;
     if (!conversationId || !content || typeof content !== "string" || !content.trim()) {
       return;
     }
@@ -124,22 +113,44 @@ async function handleIncomingFrame(ws: UserSocket, senderId: number, payload: an
       return;
     }
 
-    // 2. Persist message into PostgreSQL
+    let finalContent = content.trim();
+    let msgType = messageType || "text";
+
+    // 2. Intercept base64 images and enforce AWS S3 storage
+    if (finalContent.startsWith("data:image/") || (msgType === "image" && !finalContent.startsWith("http"))) {
+      try {
+        const uploadRes = await uploadMedia(finalContent, "chat_images");
+        if (uploadRes?.url && uploadRes.url.startsWith("http")) {
+          finalContent = uploadRes.url;
+          msgType = "image";
+        } else {
+          ws.send(JSON.stringify({ type: "error", message: "Failed to upload image to AWS S3" }));
+          return;
+        }
+      } catch (err: any) {
+        ws.send(JSON.stringify({ type: "error", message: err?.message || "Failed to upload image to AWS S3" }));
+        return;
+      }
+    }
+
+    // 3. Persist message into PostgreSQL
     const [message] = await db
       .insert(messagesTable)
       .values({
         conversationId,
         senderId,
-        content: content.trim(),
-        messageType: "text",
+        content: finalContent,
+        messageType: msgType,
       })
       .returning();
 
-    // 3. Update conversation last_message preview
+    const lastMsgPreview = msgType === "image" ? "📷 Photo" : finalContent;
+
+    // 4. Update conversation last_message preview
     await db
       .update(conversationsTable)
       .set({
-        lastMessage: content.trim(),
+        lastMessage: lastMsgPreview,
         lastMessageAt: new Date(),
       })
       .where(eq(conversationsTable.id, conversationId));

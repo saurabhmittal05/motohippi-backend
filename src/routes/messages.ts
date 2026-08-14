@@ -6,6 +6,7 @@ import { authMiddleware } from "../lib/auth.js";
 import { formatUser } from "./auth.js";
 import { SendMessageBody } from "../lib/api-zod/index.js";
 import { broadcastToUser } from "../services/ws.service.js";
+import { uploadMedia } from "../services/upload.service.js";
 
 const router = Router();
 
@@ -104,12 +105,34 @@ router.post("/conversations/:conversationId/messages", authMiddleware, async (re
   }
   const result = SendMessageBody.safeParse(req.body);
   if (!result.success) { res.status(400).json({ error: "Invalid input" }); return; }
+
+  let finalContent = result.data.content.trim();
+  let msgType = result.data.messageType || "text";
+
+  if (finalContent.startsWith("data:image/") || (msgType === "image" && !finalContent.startsWith("http"))) {
+    try {
+      const uploadRes = await uploadMedia(finalContent, "chat_images");
+      if (uploadRes?.url && uploadRes.url.startsWith("http")) {
+        finalContent = uploadRes.url;
+        msgType = "image";
+      } else {
+        res.status(500).json({ error: "Failed to upload image to AWS S3" });
+        return;
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to upload image to AWS S3" });
+      return;
+    }
+  }
+
   const [message] = await db.insert(messagesTable).values({
     conversationId, senderId: userId,
-    content: result.data.content, messageType: result.data.messageType ?? "text",
+    content: finalContent, messageType: msgType,
   }).returning();
   if (!message) { res.status(500).json({ error: "Failed to send message" }); return; }
-  await db.update(conversationsTable).set({ lastMessage: result.data.content, lastMessageAt: new Date() }).where(eq(conversationsTable.id, conversationId));
+
+  const lastMsgPreview = msgType === "image" ? "📷 Photo" : finalContent;
+  await db.update(conversationsTable).set({ lastMessage: lastMsgPreview, lastMessageAt: new Date() }).where(eq(conversationsTable.id, conversationId));
 
   const outboundPayload = {
     type: "new_message",
