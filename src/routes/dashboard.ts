@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../lib/db/index.js";
 import { usersTable, groupsTable, postsTable, matchesTable, conversationsTable, messagesTable, eventsTable } from "../lib/db/index.js";
-import { eq, sql, desc, ne } from "drizzle-orm";
+import { eq, sql, desc, ne, and, or } from "drizzle-orm";
 import { authMiddleware } from "../lib/auth.js";
 import { formatUser } from "./auth.js";
 
@@ -14,8 +14,16 @@ router.get("/dashboard", authMiddleware, async (req, res) => {
     .where(sql`${matchesTable.user1Id} = ${userId} OR ${matchesTable.user2Id} = ${userId}`);
   const [convCount] = await db.select({ count: sql<number>`count(*)` }).from(conversationsTable)
     .where(sql`${conversationsTable.user1Id} = ${userId} OR ${conversationsTable.user2Id} = ${userId}`);
-  const [unreadCount] = await db.select({ count: sql<number>`count(*)` }).from(messagesTable)
-    .where(sql`${messagesTable.senderId} != ${userId} AND ${messagesTable.isRead} = false`);
+  const [unreadCount] = await db.select({ count: sql<number>`count(*)` })
+    .from(messagesTable)
+    .innerJoin(conversationsTable, eq(messagesTable.conversationId, conversationsTable.id))
+    .where(
+      and(
+        or(eq(conversationsTable.user1Id, userId), eq(conversationsTable.user2Id, userId)),
+        ne(messagesTable.senderId, userId),
+        eq(messagesTable.isRead, false)
+      )
+    );
 
   const suggestedRiders = await db.select().from(usersTable).where(ne(usersTable.id, userId)).limit(6);
   const nearbyEvents = await db.select().from(eventsTable).orderBy(desc(eventsTable.createdAt)).limit(4);

@@ -1,13 +1,28 @@
 import { Router } from "express";
 import { db } from "../lib/db/index.js";
 import { conversationsTable, messagesTable, usersTable } from "../lib/db/index.js";
-import { eq, sql, desc, and, lt } from "drizzle-orm";
+import { eq, sql, desc, and, lt, or, ne } from "drizzle-orm";
 import { authMiddleware } from "../lib/auth.js";
 import { formatUser } from "./auth.js";
 import { SendMessageBody } from "../lib/api-zod/index.js";
 import { broadcastToUser } from "../services/ws.service.js";
 
 const router = Router();
+
+router.get("/conversations/unread-count", authMiddleware, async (req, res) => {
+  const userId = (req as any).userId;
+  const [result] = await db.select({ count: sql<number>`count(*)` })
+    .from(messagesTable)
+    .innerJoin(conversationsTable, eq(messagesTable.conversationId, conversationsTable.id))
+    .where(
+      and(
+        or(eq(conversationsTable.user1Id, userId), eq(conversationsTable.user2Id, userId)),
+        ne(messagesTable.senderId, userId),
+        eq(messagesTable.isRead, false)
+      )
+    );
+  res.json({ unreadCount: Number(result?.count ?? 0) });
+});
 
 router.get("/conversations", authMiddleware, async (req, res) => {
   const userId = (req as any).userId;
@@ -53,6 +68,17 @@ router.get("/conversations/:conversationId/messages", authMiddleware, async (req
   if (!conv || (conv.user1Id !== userId && conv.user2Id !== userId)) {
     res.status(403).json({ error: "Forbidden" }); return;
   }
+
+  // Auto-mark incoming messages in this conversation as read
+  await db.update(messagesTable)
+    .set({ isRead: true })
+    .where(
+      and(
+        eq(messagesTable.conversationId, conversationId),
+        ne(messagesTable.senderId, userId),
+        eq(messagesTable.isRead, false)
+      )
+    );
 
   const whereClause = beforeId
     ? and(eq(messagesTable.conversationId, conversationId), lt(messagesTable.id, beforeId))
