@@ -10,10 +10,8 @@ const router = Router();
 router.get("/dashboard", authMiddleware, async (req, res) => {
   const userId = (req as any).userId;
 
-  const [matchCount] = await db.select({ count: sql<number>`count(*)` }).from(matchesTable)
-    .where(sql`${matchesTable.user1Id} = ${userId} OR ${matchesTable.user2Id} = ${userId}`);
-  const [convCount] = await db.select({ count: sql<number>`count(*)` }).from(conversationsTable)
-    .where(sql`${conversationsTable.user1Id} = ${userId} OR ${conversationsTable.user2Id} = ${userId}`);
+  const [pendingRequestsCount] = await db.select({ count: sql<number>`count(*)` }).from(matchesTable)
+    .where(and(eq(matchesTable.receiverId, userId), eq(matchesTable.status, "pending")));
   const [unreadCount] = await db.select({ count: sql<number>`count(*)` })
     .from(messagesTable)
     .innerJoin(conversationsTable, eq(messagesTable.conversationId, conversationsTable.id))
@@ -43,8 +41,7 @@ router.get("/dashboard", authMiddleware, async (req, res) => {
 
   res.json({
     stats: {
-      totalMatches: Number(matchCount?.count ?? 0),
-      groupsCount: Number(convCount?.count ?? 0),
+      activeRequests: Number(pendingRequestsCount?.count ?? 0),
       unreadMessages: Number(unreadCount?.count ?? 0),
     },
     suggestedRiders: suggestedRiders.map(formatUser),
