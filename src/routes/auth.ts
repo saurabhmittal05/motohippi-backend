@@ -48,6 +48,13 @@ router.post("/auth/send-otp", authController.handleSendOtp);
 router.post("/auth/verify-otp", authController.handleVerifyOtp);
 router.post("/auth/forgot-password", authController.handleForgotPassword);
 
+const PLAN_RANKS: Record<string, number> = {
+  free: 0,
+  plus: 1,
+  gold: 2,
+  platinum: 3,
+};
+
 // ── Subscription Upgrade Route ────────────────────────────────────────────────
 router.post("/subscription/upgrade", authMiddleware, async (req, res) => {
   try {
@@ -63,7 +70,21 @@ router.post("/subscription/upgrade", authMiddleware, async (req, res) => {
       return;
     }
 
-    const expiresAt = plan === "free" ? null : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    const currentRank = PLAN_RANKS[user.plan || "free"] ?? 0;
+    const targetRank = PLAN_RANKS[plan] ?? 0;
+
+    if (targetRank <= currentRank) {
+      res.status(400).json({ error: "You can only upgrade to a higher tier plan." });
+      return;
+    }
+
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     const shouldVerify = plan === "gold" || plan === "platinum";
 
     const [updatedUser] = await db.update(usersTable)
@@ -74,11 +95,6 @@ router.post("/subscription/upgrade", authMiddleware, async (req, res) => {
       })
       .where(eq(usersTable.id, userId))
       .returning();
-
-    if (!updatedUser) {
-      res.status(404).json({ error: "User not found" });
-      return;
-    }
 
     res.json({ message: `Successfully upgraded to ${plan.toUpperCase()}!`, user: formatUser(updatedUser) });
   } catch (err: any) {
