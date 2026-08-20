@@ -50,7 +50,7 @@ router.post("/discover/swipe", authMiddleware, async (req, res) => {
   try {
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, swiperId)).limit(1);
     if (user) {
-      const userPlan = user.plan || "free";
+      const userPlan = (user.plan || "free").toLowerCase();
       if (userPlan === "free") {
         const now = new Date();
         const lastReset = user.lastSwipeResetAt ? new Date(user.lastSwipeResetAt) : new Date(0);
