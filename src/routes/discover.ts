@@ -64,12 +64,13 @@ router.post("/discover/swipe", authMiddleware, async (req, res) => {
             .where(eq(usersTable.id, swiperId));
         }
 
-        if (count >= 25) {
+        const maxLimit = parseInt(process.env.DAILY_SWIPE_LIMIT || "25", 10);
+        if (count >= maxLimit) {
           res.status(403).json({
-            error: "Daily swipe limit reached (25/25). Upgrade to Plus for unlimited swipes!",
+            error: `Daily swipe limit reached (${count}/${maxLimit}). Upgrade to Plus for unlimited swipes!`,
             code: "SWIPE_LIMIT_REACHED",
             dailySwipesCount: count,
-            maxDailySwipes: 25,
+            maxDailySwipes: maxLimit,
           });
           return;
         }
