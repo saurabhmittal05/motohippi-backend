@@ -237,6 +237,10 @@ export async function initDatabase() {
         "ALTER TABLE groups ADD COLUMN IF NOT EXISTS created_by_id INTEGER DEFAULT 1",
         "ALTER TABLE posts ADD COLUMN IF NOT EXISTS hashtags JSONB DEFAULT '[]'::jsonb",
         "ALTER TABLE posts ADD COLUMN IF NOT EXISTS location TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'free'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_expires_at TIMESTAMP",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_swipes_count INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_swipe_reset_at TIMESTAMP DEFAULT NOW()",
       ];
 
       for (const query of columnMigrations) {

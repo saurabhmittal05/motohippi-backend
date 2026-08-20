@@ -25,6 +25,10 @@ export const usersTable = pgTable("users", {
   followingCount: integer("following_count").default(0).notNull(),
   tripsCount: integer("trips_count").default(0).notNull(),
   isVerified: boolean("is_verified").default(false).notNull(),
+  plan: text("plan").default("free").notNull(),
+  planExpiresAt: timestamp("plan_expires_at"),
+  dailySwipesCount: integer("daily_swipes_count").default(0).notNull(),
+  lastSwipeResetAt: timestamp("last_swipe_reset_at").defaultNow().notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

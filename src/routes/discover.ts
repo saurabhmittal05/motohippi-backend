@@ -48,10 +48,63 @@ router.post("/discover/swipe", authMiddleware, async (req, res) => {
   const { targetUserId, action } = result.data;
 
   try {
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, swiperId)).limit(1);
+    if (user) {
+      const userPlan = user.plan || "free";
+      if (userPlan === "free") {
+        const now = new Date();
+        const lastReset = user.lastSwipeResetAt ? new Date(user.lastSwipeResetAt) : new Date(0);
+        const hoursPassed = (now.getTime() - lastReset.getTime()) / (1000 * 60 * 60);
+
+        let count = user.dailySwipesCount ?? 0;
+        if (hoursPassed >= 24) {
+          count = 0;
+          await db.update(usersTable)
+            .set({ dailySwipesCount: 0, lastSwipeResetAt: now })
+            .where(eq(usersTable.id, swiperId));
+        }
+
+        if (count >= 25) {
+          res.status(403).json({
+            error: "Daily swipe limit reached (25/25). Upgrade to Plus for unlimited swipes!",
+            code: "SWIPE_LIMIT_REACHED",
+            dailySwipesCount: count,
+            maxDailySwipes: 25,
+          });
+          return;
+        }
+
+        await db.update(usersTable)
+          .set({ dailySwipesCount: count + 1 })
+          .where(eq(usersTable.id, swiperId));
+      }
+    }
+
     const swipeResult = await matchService.handleSwipe(swiperId, targetUserId, action);
     res.json(swipeResult);
   } catch (err: any) {
     res.status(500).json({ error: "Swipe processing failed", message: err?.message });
+  }
+});
+
+router.post("/discover/undo-swipe", authMiddleware, async (req, res) => {
+  const swiperId = (req as any).userId;
+  try {
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, swiperId)).limit(1);
+    if (!user || user.plan === "free") {
+      res.status(403).json({ error: "Undo swipe is a Plus/Gold/Platinum feature. Upgrade to unlock!" });
+      return;
+    }
+    const [lastSwipe] = await db.select().from(swipesTable)
+      .where(eq(swipesTable.swiperId, swiperId))
+      .orderBy(sql`${swipesTable.createdAt} DESC`)
+      .limit(1);
+    if (lastSwipe) {
+      await db.delete(swipesTable).where(eq(swipesTable.id, lastSwipe.id));
+    }
+    res.json({ success: true, message: "Last swipe undone!" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to undo swipe", message: err?.message });
   }
 });
 

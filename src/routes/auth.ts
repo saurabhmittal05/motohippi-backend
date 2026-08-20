@@ -2,7 +2,7 @@ import { Router } from "express";
 import { usersTable } from "../lib/db/index.js";
 import { db } from "../lib/db/index.js";
 import { eq } from "drizzle-orm";
-import { hashPassword, generateToken } from "../lib/auth.js";
+import { hashPassword, generateToken, authMiddleware } from "../lib/auth.js";
 import * as authController from "../controllers/auth.controller.js";
 
 const router = Router();
@@ -30,6 +30,10 @@ export function formatUser(user: typeof usersTable.$inferSelect) {
     followingCount: user.followingCount,
     tripsCount: user.tripsCount,
     isVerified: user.isVerified,
+    plan: user.plan || "free",
+    planExpiresAt: user.planExpiresAt ? new Date(user.planExpiresAt).toISOString() : null,
+    dailySwipesCount: user.dailySwipesCount ?? 0,
+    lastSwipeResetAt: user.lastSwipeResetAt ? new Date(user.lastSwipeResetAt).toISOString() : null,
     createdAt: user.createdAt
       ? new Date(user.createdAt).toISOString()
       : new Date().toISOString(),
@@ -43,6 +47,44 @@ router.post("/auth/logout", authController.handleLogout);
 router.post("/auth/send-otp", authController.handleSendOtp);
 router.post("/auth/verify-otp", authController.handleVerifyOtp);
 router.post("/auth/forgot-password", authController.handleForgotPassword);
+
+// ── Subscription Upgrade Route ────────────────────────────────────────────────
+router.post("/subscription/upgrade", authMiddleware, async (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    if (!userId) {
+      res.status(401).json({ error: "Invalid session" });
+      return;
+    }
+
+    const { plan } = req.body;
+    if (!plan || !["free", "plus", "gold", "platinum"].includes(plan)) {
+      res.status(400).json({ error: "Invalid plan type" });
+      return;
+    }
+
+    const expiresAt = plan === "free" ? null : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const shouldVerify = plan === "gold" || plan === "platinum";
+
+    const [updatedUser] = await db.update(usersTable)
+      .set({
+        plan,
+        planExpiresAt: expiresAt,
+        ...(shouldVerify ? { isVerified: true } : {}),
+      })
+      .where(eq(usersTable.id, userId))
+      .returning();
+
+    if (!updatedUser) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    res.json({ message: `Successfully upgraded to ${plan.toUpperCase()}!`, user: formatUser(updatedUser) });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to upgrade subscription", message: err?.message });
+  }
+});
 router.post("/auth/reset-password", authController.handleResetPassword);
 
 // ── GET /api/auth/google ──────────────────────────────────────────────────────
