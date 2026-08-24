@@ -11,45 +11,48 @@ import {
 
 const router = Router();
 
-export const PLANS: Record<string, { id: string; name: string; amount: number; durationDays: number; desc: string; perks: string[] }> = {
-  free: {
-    id: "free",
-    name: "Free",
-    amount: 0,
-    durationDays: 30,
-    desc: "Essential features for casual riders & travelers",
-    perks: ["25 swipes/day", "Basic Matching", "Chat after Match"],
-  },
-  plus: {
-    id: "plus",
-    name: "Plus",
-    amount: 299,
-    durationDays: 30,
-    desc: "Unlimited swipes & ad-free experience",
-    perks: ["Unlimited Swipes", "Undo Swipe", "No Ads"],
-  },
-  gold: {
-    id: "gold",
-    name: "Gold",
-    amount: 599,
-    durationDays: 30,
-    desc: "See who likes you & gold verified badge",
-    perks: ["Everything in Plus", "See Who Likes You", "Verified Badge"],
-  },
-  platinum: {
-    id: "platinum",
-    name: "Platinum",
-    amount: 999,
-    durationDays: 30,
-    desc: "VIP access & 24/7 priority support",
-    perks: ["Everything in Gold", "VIP Support"],
-  },
-};
+export function getPlans(): Record<string, { id: string; name: string; amount: number; durationDays: number; desc: string; perks: string[] }> {
+  return {
+    free: {
+      id: "free",
+      name: "Free",
+      amount: 0,
+      durationDays: 30,
+      desc: "Essential features for casual riders & travelers",
+      perks: ["25 swipes/day", "Basic Matching", "Chat after Match"],
+    },
+    plus: {
+      id: "plus",
+      name: "Plus",
+      amount: parseInt(process.env.PLAN_PLUS_PRICE || "299", 10),
+      durationDays: 30,
+      desc: "Unlimited swipes & ad-free experience",
+      perks: ["Unlimited Swipes", "Undo Swipe", "No Ads"],
+    },
+    gold: {
+      id: "gold",
+      name: "Gold",
+      amount: parseInt(process.env.PLAN_GOLD_PRICE || "599", 10),
+      durationDays: 30,
+      desc: "See who likes you & gold verified badge",
+      perks: ["Everything in Plus", "See Who Likes You", "Verified Badge"],
+    },
+    platinum: {
+      id: "platinum",
+      name: "Platinum",
+      amount: parseInt(process.env.PLAN_PLATINUM_PRICE || "999", 10),
+      durationDays: 30,
+      desc: "VIP access & 24/7 priority support",
+      perks: ["Everything in Gold", "VIP Support"],
+    },
+  };
+}
 
 // 1. GET /api/payments/plans — List available membership plans
 router.get("/payments/plans", (_req: Request, res: Response) => {
+  const plans = getPlans();
   res.json({
-    plans: Object.values(PLANS),
+    plans: Object.values(plans),
   });
 });
 
@@ -58,13 +61,14 @@ router.post("/payments/create-order", authMiddleware, async (req: Request, res: 
   try {
     const userId = (req as any).userId as number;
     const { planId } = req.body;
+    const plans = getPlans();
 
-    if (!planId || !PLANS[planId]) {
+    if (!planId || !plans[planId]) {
       res.status(400).json({ error: "Invalid planId selected" });
       return;
     }
 
-    const selectedPlan = PLANS[planId];
+    const selectedPlan = plans[planId];
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
     if (!user) {
       res.status(404).json({ error: "User not found" });
@@ -120,7 +124,8 @@ async function completeUserPayment(orderId: string, cfData?: any) {
   if (!payment) return null;
 
   if (payment.status !== "PAID") {
-    const selectedPlan = PLANS[payment.planId];
+    const plans = getPlans();
+    const selectedPlan = plans[payment.planId];
     const durationDays = selectedPlan?.durationDays || 30;
 
     const expiresAt = new Date();
