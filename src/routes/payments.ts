@@ -75,11 +75,23 @@ router.post("/payments/create-order", authMiddleware, async (req: Request, res: 
       return;
     }
 
+    const cfEnv = (process.env.PAYMENT_GATEWAY_ENV || process.env.CASHFREE_ENV || 'TEST').toUpperCase();
+    const mode = (cfEnv === 'PRODUCTION' || cfEnv === 'PROD') ? 'production' : 'sandbox';
+
     const timestamp = Date.now();
     const orderId = `order_mh_${timestamp}_usr${userId}`;
     const frontendBase = process.env.VITE_FRONTEND_URL || req.headers.origin || "https://www.motohippi.com";
-    const returnUrl = `${frontendBase}/payment-status?order_id={order_id}`;
-    const notifyUrl = process.env.CASHFREE_NOTIFY_URL || `${req.protocol}://${req.get("host")}/api/payments/webhook`;
+    let returnUrl = `${frontendBase}/payment-status?order_id={order_id}`;
+    let notifyUrl = process.env.CASHFREE_NOTIFY_URL || `${req.protocol}://${req.get("host")}/api/payments/webhook`;
+
+    if (mode === "production") {
+      if (returnUrl.startsWith("http://")) {
+        returnUrl = returnUrl.replace(/^http:\/\//, "https://");
+      }
+      if (notifyUrl.startsWith("http://")) {
+        notifyUrl = notifyUrl.replace(/^http:\/\//, "https://");
+      }
+    }
 
     // Call Cashfree PG API
     const cfOrder = await createCashfreeOrder({
@@ -109,6 +121,7 @@ router.post("/payments/create-order", authMiddleware, async (req: Request, res: 
       success: true,
       orderId,
       paymentSessionId: cfOrder.payment_session_id,
+      cfMode: mode,
       amount: selectedPlan.amount,
       planName: selectedPlan.name,
     });

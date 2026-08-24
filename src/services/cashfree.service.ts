@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 
 function getBaseUrl(): string {
-  const env = (process.env.CASHFREE_ENV || 'TEST').toUpperCase();
+  const env = (process.env.PAYMENT_GATEWAY_ENV || process.env.CASHFREE_ENV || 'TEST').toUpperCase();
   return env === 'PRODUCTION' || env === 'PROD'
     ? 'https://api.cashfree.com/pg'
     : 'https://sandbox.cashfree.com/pg';
