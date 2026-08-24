@@ -6,3 +6,4 @@ export * from "./insurance";
 export * from "./messages";
 export * from "./discover";
 export * from "./trips";
+export * from "./payments";
