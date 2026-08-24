@@ -5,6 +5,7 @@ import { eq, and } from "drizzle-orm";
 import {
   createCashfreeOrder,
   getCashfreeOrder,
+  getCashfreeOrderPayments,
   verifyCashfreeWebhookSignature,
 } from "../services/cashfree.service.js";
 
@@ -151,6 +152,27 @@ async function completeUserPayment(orderId: string, cfData?: any) {
   return payment;
 }
 
+// Helper function to mark payment as failed/cancelled in database
+async function failUserPayment(orderId: string, failedStatus: string = "FAILED", cfData?: any) {
+  const [payment] = await db.select().from(paymentsTable).where(eq(paymentsTable.orderId, orderId)).limit(1);
+  if (!payment) return null;
+
+  if (payment.status === "PENDING") {
+    await db
+      .update(paymentsTable)
+      .set({
+        status: failedStatus,
+        cfPaymentId: cfData?.payment_id || cfData?.cf_payment_id || payment.cfPaymentId,
+        paymentMode: cfData?.payment_group || cfData?.payment_method || payment.paymentMode,
+        rawWebhookData: cfData || payment.rawWebhookData,
+        updatedAt: new Date(),
+      })
+      .where(eq(paymentsTable.id, payment.id));
+  }
+
+  return payment;
+}
+
 // 3. GET /api/payments/verify/:orderId — Verify payment status
 router.get("/payments/verify/:orderId", authMiddleware, async (req: Request, res: Response) => {
   try {
@@ -168,16 +190,30 @@ router.get("/payments/verify/:orderId", authMiddleware, async (req: Request, res
       return;
     }
 
-    // Check live status from Cashfree
+    // Check live status and payment attempts from Cashfree
     let cfOrder: any = null;
+    let cfPayments: any[] = [];
     try {
       cfOrder = await getCashfreeOrder(orderId);
+      cfPayments = await getCashfreeOrderPayments(orderId);
     } catch (cfErr) {
       console.warn("Could not fetch Cashfree status directly, relying on DB status:", cfErr);
     }
 
-    if (cfOrder && cfOrder.order_status === "PAID") {
-      await completeUserPayment(orderId, cfOrder);
+    const successfulAttempt = cfPayments.find((p: any) => p.payment_status === "SUCCESS");
+    const failedAttempt = cfPayments.find((p: any) => p.payment_status === "FAILED" || p.payment_status === "USER_DROPPED" || p.payment_status === "CANCELLED");
+
+    if (successfulAttempt || (cfOrder && cfOrder.order_status === "PAID")) {
+      await completeUserPayment(orderId, successfulAttempt || cfOrder);
+    } else if (failedAttempt) {
+      const status = failedAttempt.payment_status === "USER_DROPPED" ? "CANCELLED" : "FAILED";
+      await failUserPayment(orderId, status, failedAttempt);
+    } else if (cfOrder) {
+      if (cfOrder.order_status === "EXPIRED") {
+        await failUserPayment(orderId, "EXPIRED", cfOrder);
+      } else if (cfOrder.order_status === "TERMINATED") {
+        await failUserPayment(orderId, "CANCELLED", cfOrder);
+      }
     }
 
     // Fetch updated payment and user profile
@@ -199,7 +235,30 @@ router.get("/payments/verify/:orderId", authMiddleware, async (req: Request, res
   }
 });
 
-// 4. POST /api/payments/webhook — Cashfree Webhook Handler
+// 4. POST /api/payments/mark-failed — Mark payment failed/cancelled from frontend
+router.post("/payments/mark-failed", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { orderId, reason } = req.body;
+    const userId = (req as any).userId as number;
+
+    if (!orderId) {
+      res.status(400).json({ error: "orderId is required" });
+      return;
+    }
+
+    const [payment] = await db.select().from(paymentsTable).where(eq(paymentsTable.orderId, orderId)).limit(1);
+    if (payment && payment.userId === userId && payment.status === "PENDING") {
+      const status = reason === "USER_CANCELLED" ? "CANCELLED" : "FAILED";
+      await failUserPayment(orderId, status);
+    }
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to update order status" });
+  }
+});
+
+// 5. POST /api/payments/webhook — Cashfree Webhook Handler
 router.post("/payments/webhook", async (req: Request, res: Response) => {
   try {
     const signature = req.headers["x-webhook-signature"] as string;
@@ -224,6 +283,18 @@ router.post("/payments/webhook", async (req: Request, res: Response) => {
       const orderId = orderData?.order_id;
       if (orderId) {
         await completeUserPayment(orderId, paymentData);
+      }
+    } else if (
+      eventType === "PAYMENT_FAILED_WEBHOOK" ||
+      eventType === "PAYMENT_USER_DROPPED_WEBHOOK" ||
+      paymentData?.payment_status === "FAILED" ||
+      paymentData?.payment_status === "USER_DROPPED" ||
+      paymentData?.payment_status === "CANCELLED"
+    ) {
+      const orderId = orderData?.order_id;
+      if (orderId) {
+        const failStatus = paymentData?.payment_status === "USER_DROPPED" ? "CANCELLED" : "FAILED";
+        await failUserPayment(orderId, failStatus, paymentData);
       }
     }
 

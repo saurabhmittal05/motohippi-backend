@@ -91,6 +91,26 @@ export async function getCashfreeOrder(orderId: string): Promise<CashfreeOrderRe
   return data as CashfreeOrderResponse;
 }
 
+export async function getCashfreeOrderPayments(orderId: string): Promise<any[]> {
+  try {
+    const url = `${getBaseUrl()}/orders/${encodeURIComponent(orderId)}/payments`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: getHeaders(),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      return [];
+    }
+
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.warn('Failed to fetch Cashfree order payments:', err);
+    return [];
+  }
+}
+
 export function verifyCashfreeWebhookSignature(
   rawBody: string,
   timestamp: string,
