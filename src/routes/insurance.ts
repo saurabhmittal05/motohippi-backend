@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { authMiddleware } from "../lib/auth.js";
 import { PurchaseInsuranceBody } from "../lib/api-zod/index.js";
 import { sendMail } from "../lib/email.js";
+import { sendWhatsAppInquiryNotification } from "../lib/whatsapp.js";
 import crypto from "crypto";
 
 const router = Router();
@@ -145,6 +146,22 @@ router.post("/insurance/inquiry", async (req, res) => {
       html,
     }).catch((mailErr) => {
       console.error("⚠️ Error sending insurance inquiry notification email:", mailErr);
+    });
+
+    // Asynchronously dispatch WhatsApp Cloud API lead notification
+    sendWhatsAppInquiryNotification({
+      fullName,
+      mobileNumber,
+      email: email || null,
+      insuranceRequirement: insuranceRequirement || "New Insurance",
+      manufacturer: manufacturer || null,
+      model: model || null,
+      yearOfPurchase: yearOfPurchase || null,
+      kmsDriven: kmsDriven || null,
+      city: city || null,
+      preferredTime: preferredTime || null,
+    }).catch((waErr) => {
+      console.error("⚠️ Error sending WhatsApp inquiry notification:", waErr);
     });
 
     res.status(201).json({
